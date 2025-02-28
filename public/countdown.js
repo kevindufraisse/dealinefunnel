@@ -33,32 +33,59 @@ const defaultStyles = {
   fontFamily: 'system-ui, -apple-system, sans-serif'
 };
 
+// Load FingerprintJS
+async function loadFingerprintJS() {
+  try {
+    if (typeof FingerprintJS !== 'undefined') {
+      console.log('✅ FingerprintJS already loaded');
+      return FingerprintJS;
+    }
+
+    console.log('📦 Loading FingerprintJS');
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js';
+    script.async = true;
+
+    await new Promise((resolve, reject) => {
+      script.onload = () => {
+        console.log('✅ FingerprintJS script loaded');
+        resolve();
+      };
+      script.onerror = (e) => {
+        console.error('❌ Error loading FingerprintJS:', e);
+        reject(e);
+      };
+      document.head.appendChild(script);
+    });
+
+    // Wait a bit to ensure FingerprintJS is initialized
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    if (typeof FingerprintJS === 'undefined') {
+      throw new Error('FingerprintJS failed to initialize');
+    }
+
+    return FingerprintJS;
+  } catch (error) {
+    console.error('❌ Error in loadFingerprintJS:', error);
+    throw error;
+  }
+}
+
 // Initialize countdown
 async function initializeCountdown() {
   // Wrap in a try-catch to handle errors gracefully
   try {
     console.log('🔄 Starting countdown initialization');
 
-    // Load FingerprintJS from CDN
-    if (!window.FingerprintJS) {
-      console.log('📦 Loading FingerprintJS');
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js';
-      script.async = true;
-      await new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = (e) => {
-          console.error('❌ Error loading FingerprintJS:', e);
-          reject(e);
-        };
-        document.head.appendChild(script);
-      });
-      console.log('✅ FingerprintJS loaded');
-    }
-
     // Find all countdown containers on the page
     const containers = document.querySelectorAll('[data-countdown-widget]');
     console.log('🔍 Found containers:', containers.length);
+    
+    // Load FingerprintJS once for all containers
+    const FingerprintJS = await loadFingerprintJS();
+    console.log('🔍 Initializing FingerprintJS instance');
+    const fp = await FingerprintJS.load();
     
     containers.forEach(async (container) => {
       try {
@@ -74,9 +101,8 @@ async function initializeCountdown() {
         Object.assign(container.style, defaultStyles);
         container.innerHTML = '<div>Loading countdown...</div>';
 
-        // Initialize FingerprintJS
-        console.log('🔍 Initializing FingerprintJS');
-        const fp = await FingerprintJS.load();
+        // Get fingerprint
+        console.log('🔍 Generating fingerprint');
         const result = await fp.get();
         const fingerprint = result.visitorId;
         const userAgent = navigator.userAgent;
@@ -237,13 +263,17 @@ if (document.readyState === 'loading') {
   initializeCountdown();
 }
 
-// Re-initialize on dynamic content changes
+// Re-initialize on dynamic content changes with debounce
+let debounceTimeout;
 const observer = new MutationObserver((mutations) => {
-  mutations.forEach((mutation) => {
-    if (mutation.addedNodes.length > 0) {
+  if (debounceTimeout) {
+    clearTimeout(debounceTimeout);
+  }
+  debounceTimeout = setTimeout(() => {
+    if (mutations.some(mutation => mutation.addedNodes.length > 0)) {
       initializeCountdown();
     }
-  });
+  }, 100);
 });
 
 observer.observe(document.body, {
