@@ -58,6 +58,17 @@ export const handler: Handler = async (event) => {
         fingerprint
       }]);
 
+    // Create visitor entry
+    await supabase
+      .from('visitors')
+      .insert([{
+        visitor_id: visitorId,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        fingerprint,
+        last_seen: new Date().toISOString()
+      }]);
+
       console.log('📊 [visitor-generate] Database response:', {
         success: true,
         timestamp: new Date().toISOString()
