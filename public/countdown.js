@@ -1,8 +1,27 @@
-// Import required dependencies from CDN
-import FingerprintJS from 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@4.2.1/dist/esm.min.js';
-
 // Configuration
-const API_BASE_URL = window.location.origin;
+const API_BASE_URL = 'https://dealinefunnel.netlify.app';
+
+// Utility functions
+function setCookie(name, value, days) {
+  const date = new Date();
+  date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+  const expires = `expires=${date.toUTCString()}`;
+  document.cookie = `${name}=${value};${expires};path=/;SameSite=Lax`;
+}
+
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(';').shift();
+  return null;
+}
+
+// Default headers for all API requests
+const defaultHeaders = {
+  'Content-Type': 'application/json',
+  'Accept': 'application/json',
+  'Origin': window.location.origin
+};
 
 // Default styles
 const defaultStyles = {
@@ -15,9 +34,21 @@ const defaultStyles = {
 };
 
 // Initialize countdown
-function initializeCountdown() {
+async function initializeCountdown() {
   // Wrap in a try-catch to handle errors gracefully
   try {
+    // Load FingerprintJS from CDN
+    if (!window.FingerprintJS) {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js';
+      script.async = true;
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+
     // Find all countdown containers on the page
     const containers = document.querySelectorAll('[data-countdown-widget]');
     
@@ -45,15 +76,33 @@ function initializeCountdown() {
 
         // Initialize tracking
         console.log('🔍 Generating visitor ID');
+        const existingVisitorId = getCookie('dfunnel_visitor');
+        
+        if (existingVisitorId) {
+          console.log('📍 Using existing visitor ID from cookie:', existingVisitorId);
+          const visitorCheckResponse = await fetch(
+            `${API_BASE_URL}/api/combined-visitor-lookup?visitor_id=${encodeURIComponent(existingVisitorId)}`,
+            {
+              headers: defaultHeaders
+            }
+          );
+          
+          if (visitorCheckResponse.ok) {
+            const { visitor: existingVisitor } = await visitorCheckResponse.json();
+            if (existingVisitor) {
+              console.log('✅ Existing visitor found');
+              return existingVisitorId;
+            }
+          }
+        }
+
         const visitorResponse = await fetch(`${API_BASE_URL}/api/visitor-generate`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
+          headers: defaultHeaders,
           body: JSON.stringify({
             userAgent,
-            fingerprint
+            fingerprint,
+            campaignId
           })
         });
 
@@ -63,15 +112,16 @@ function initializeCountdown() {
 
         const { visitorId } = await visitorResponse.json();
         console.log('✅ Visitor ID generated:', visitorId);
+        
+        // Store visitor ID in cookie for 30 days
+        setCookie('dfunnel_visitor', visitorId, 30);
 
         // Look up visitor data
         console.log('🔍 Looking up visitor data');
         const lookupResponse = await fetch(
           `${API_BASE_URL}/api/combined-visitor-lookup?visitor_id=${encodeURIComponent(visitorId)}`,
           {
-            headers: {
-              'Accept': 'application/json'
-            }
+            headers: defaultHeaders
           }
         );
 
@@ -87,9 +137,7 @@ function initializeCountdown() {
           console.log('🆕 Creating new visitor');
           const setResponse = await fetch(`${API_BASE_URL}/api/visitor-storage/set`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
+            headers: defaultHeaders,
             body: JSON.stringify({
               visitor_id: visitorId,
               campaign_id: campaignId,
@@ -106,7 +154,10 @@ function initializeCountdown() {
         // Get campaign configuration
         console.log('📋 Getting campaign config');
         const configResponse = await fetch(
-          `${API_BASE_URL}/api/visitor-storage-get?visitor_id=${encodeURIComponent(visitorId)}&campaign_id=${encodeURIComponent(campaignId)}`
+          `${API_BASE_URL}/api/visitor-storage-get?visitor_id=${encodeURIComponent(visitorId)}&campaign_id=${encodeURIComponent(campaignId)}`,
+          {
+            headers: defaultHeaders
+          }
         );
         const { campaign_config: config } = await configResponse.json();
         console.log('✅ Campaign config:', config);
