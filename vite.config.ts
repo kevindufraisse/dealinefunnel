@@ -18,10 +18,16 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html')
+        main: resolve(__dirname, 'index.html'),
+        countdown: resolve(__dirname, 'public/countdown.js')
       },
       output: {
-        entryFileNames: 'assets/js/[name].[hash].js',
+        entryFileNames: (chunkInfo) => {
+          if (chunkInfo.name === 'countdown') {
+            return 'countdown.js';
+          }
+          return 'assets/js/[name].[hash].js';
+        },
         chunkFileNames: 'assets/js/[name].[hash].js',
         assetFileNames: (assetInfo) => {
           const name = assetInfo?.name ?? '';
