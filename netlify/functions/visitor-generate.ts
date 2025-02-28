@@ -4,17 +4,22 @@ import { v4 as uuidv4 } from 'uuid';
 
 console.log('Debug - Supabase Config:', {
   url: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
-  hasKey: !!(process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY)
+  hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
 });
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error('Missing Supabase configuration');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': 'https://dealinefunnel.netlify.app',
@@ -39,17 +44,42 @@ export const handler: Handler = async (event) => {
 
   try {
     const { fingerprint, userAgent } = JSON.parse(event.body || '{}');
+    const now = new Date();
+    
+    // Create a new campaign
+    const campaignId = uuidv4();
+    const { error: campaignError } = await supabase
+      .from('campaigns')
+      .insert([{
+        id: campaignId,
+        title: 'Test Campaign',
+        type: 'evergreen',
+        duration_minutes: 1440, // 24 hours
+        target_urls: ['*'],
+        expiration_action: { type: 'message', content: 'Offer expired' },
+        styles: { background: '#f3f4f6', text: '#111827', button: '#3b82f6' }
+      }]);
+
+    if (campaignError) {
+      console.error('❌ [visitor-generate] Campaign creation error:', campaignError);
+      throw campaignError;
+    }
+
     const visitorId = uuidv4();
     const ipAddress = event.headers['client-ip'] || '';
+    const deadline = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours from now
 
     console.log('📝 [visitor-generate] Creating visitor:', {
       visitor_id: visitorId,
       ip: ipAddress,
       fingerprint,
-      userAgent
+      userAgent,
+      campaign_id: campaignId,
+      deadline: deadline.toISOString()
     });
+
     // Create visitor session
-    await supabase
+    const { error: sessionError } = await supabase
       .from('visitor_sessions')
       .insert([{
         visitor_id: visitorId,
@@ -58,8 +88,13 @@ export const handler: Handler = async (event) => {
         fingerprint
       }]);
 
+    if (sessionError) {
+      console.error('❌ [visitor-generate] Session creation error:', sessionError);
+      throw sessionError;
+    }
+
     // Create visitor entry
-    await supabase
+    const { error: visitorError } = await supabase
       .from('visitors')
       .insert([{
         id: uuidv4(),
@@ -67,13 +102,20 @@ export const handler: Handler = async (event) => {
         ip_address: ipAddress,
         user_agent: userAgent,
         fingerprint,
-        last_seen: new Date().toISOString()
+        campaign_id: campaignId,
+        deadline: deadline.toISOString(),
+        last_seen: now.toISOString()
       }]);
 
-      console.log('📊 [visitor-generate] Database response:', {
-        success: true,
-        timestamp: new Date().toISOString()
-      });
+    if (visitorError) {
+      console.error('❌ [visitor-generate] Visitor creation error:', visitorError);
+      throw visitorError;
+    }
+
+    console.log('📊 [visitor-generate] Database response:', {
+      success: true,
+      timestamp: now.toISOString()
+    });
 
     console.log('✅ [visitor-generate] Visitor created successfully');
 
@@ -85,7 +127,9 @@ export const handler: Handler = async (event) => {
       },
       body: JSON.stringify({
         visitor_id: visitorId,
-        created_at: new Date().toISOString()
+        campaign_id: campaignId,
+        created_at: now.toISOString(),
+        deadline: deadline.toISOString()
       })
     };
   } catch (error) {
@@ -98,7 +142,10 @@ export const handler: Handler = async (event) => {
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'Failed to generate visitor ID' })
+      body: JSON.stringify({ 
+        error: 'Failed to generate visitor ID',
+        details: error.message
+      })
     };
   }
 };
