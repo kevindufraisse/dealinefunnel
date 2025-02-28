@@ -2,6 +2,11 @@
 const API_BASE_URL = 'https://dealinefunnel.netlify.app';
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000]; // Délais exponentiels
+const DEBOUNCE_DELAY = 1000; // 1 seconde de délai pour le debounce
+
+// Cache pour éviter les appels redondants
+const processedContainers = new WeakSet();
+const processingContainers = new WeakSet();
 
 // Utility functions
 function setCookie(name, value, days) {
@@ -78,20 +83,19 @@ function validateVisitorData(data) {
   return true;
 }
 
-// Cache pour éviter les appels redondants
-const processedContainers = new WeakSet();
+// Fonction pour vérifier si un container est en cours de traitement
+function isProcessing(container) {
+  return processingContainers.has(container);
+}
 
-// Fonction pour charger FingerprintJS de manière fiable
-async function loadFingerprintJS() {
-  try {
-    console.log('🔍 Chargement de FingerprintJS');
-    const FingerprintJS = await import('https://openfpcdn.io/fingerprintjs/v4');
-    console.log('✅ FingerprintJS chargé avec succès');
-    return FingerprintJS.default;
-  } catch (error) {
-    console.error('❌ Erreur lors du chargement de FingerprintJS:', error);
-    throw new Error('Failed to load FingerprintJS');
-  }
+// Fonction pour marquer un container comme en cours de traitement
+function markProcessing(container) {
+  processingContainers.add(container);
+}
+
+// Fonction pour terminer le traitement d'un container
+function finishProcessing(container) {
+  processingContainers.delete(container);
 }
 
 // Initialize countdown
@@ -108,28 +112,27 @@ async function initializeCountdown() {
       return;
     }
 
-    // Load FingerprintJS once for all containers
-    const FingerprintJS = await withRetry(
-      () => loadFingerprintJS(),
-      'loadFingerprintJS'
-    );
-    
-    console.log('🔍 Initialisation de l\'instance FingerprintJS');
-    const fp = await FingerprintJS.load();
-    
     // Process each container
     for (const container of containers) {
       try {
-        // Skip if already processed
+        // Skip if already processed or processing
         if (processedContainers.has(container)) {
           console.log('ℹ️ Conteneur déjà traité, ignoré');
           continue;
         }
 
+        if (isProcessing(container)) {
+          console.log('ℹ️ Conteneur en cours de traitement, ignoré');
+          continue;
+        }
+
+        markProcessing(container);
+
         const campaignId = container.getAttribute('data-campaign-id');
         if (!campaignId) {
           console.error('❌ ID de campagne manquant');
-          container.innerHTML = '<div style="color: red;">Configuration error: Missing campaign ID</div>';
+          container.innerHTML = '<div style="color: red;">Erreur de configuration: ID de campagne manquant</div>';
+          finishProcessing(container);
           continue;
         }
 
@@ -139,169 +142,103 @@ async function initializeCountdown() {
         Object.assign(container.style, defaultStyles);
         container.innerHTML = '<div>Chargement du compte à rebours...</div>';
 
-        // Get fingerprint
-        const result = await withRetry(
-          async () => {
-            console.log('🔍 Génération de l\'empreinte');
-            const r = await fp.get();
-            console.log('✅ Empreinte générée');
-            return r;
-          },
-          'generateFingerprint'
-        );
+        // Load FingerprintJS
+        console.log('🔍 Chargement de FingerprintJS');
+        const FingerprintJS = await import('https://openfpcdn.io/fingerprintjs/v4')
+          .catch(error => {
+            console.error('❌ Erreur lors du chargement de FingerprintJS:', error);
+            throw new Error('Impossible de charger FingerprintJS');
+          });
 
+        console.log('✅ FingerprintJS chargé, initialisation...');
+        const fp = await FingerprintJS.default.load();
+        
+        console.log('🔍 Génération de l\'empreinte');
+        const result = await fp.get();
         const fingerprint = result.visitorId;
         const userAgent = navigator.userAgent;
 
-        // Initialize tracking
-        const visitorResponse = await withRetry(
-          async () => {
-            console.log('🔍 Génération de l\'ID visiteur');
-            const response = await fetch(`${API_BASE_URL}/api/visitor-generate`, {
-              method: 'POST',
-              headers: defaultHeaders,
-              body: JSON.stringify({
-                userAgent,
-                fingerprint,
-                campaignId
-              })
-            });
+        console.log('📡 Appel API pour générer l\'ID visiteur');
+        const visitorResponse = await fetch(`${API_BASE_URL}/api/visitor-generate`, {
+          method: 'POST',
+          headers: defaultHeaders,
+          body: JSON.stringify({
+            userAgent,
+            fingerprint,
+            campaignId
+          })
+        });
 
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            return response;
-          },
-          'generateVisitor'
-        );
-
-        const visitorData = await visitorResponse.json();
-        validateVisitorData(visitorData);
-        const { visitorId } = visitorData;
-
-        // Look up visitor data
-        const lookupResponse = await withRetry(
-          async () => {
-            console.log('🔍 Recherche des données visiteur');
-            const response = await fetch(
-              `${API_BASE_URL}/api/combined-visitor-lookup?visitor_id=${encodeURIComponent(visitorId)}`,
-              { headers: defaultHeaders }
-            );
-
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            return response;
-          },
-          'lookupVisitor'
-        );
-
-        const { visitor } = await lookupResponse.json();
-
-        let deadline;
-        if (!visitor) {
-          console.log('🆕 Création d\'un nouveau visiteur');
-          const setResponse = await withRetry(
-            async () => {
-              const response = await fetch(`${API_BASE_URL}/api/visitor-storage/set`, {
-                method: 'POST',
-                headers: defaultHeaders,
-                body: JSON.stringify({
-                  visitor_id: visitorId,
-                  campaign_id: campaignId,
-                  deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-                })
-              });
-
-              if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-              }
-
-              return response;
-            },
-            'setVisitorStorage'
-          );
-
-          const { deadline: newDeadline } = await setResponse.json();
-          deadline = newDeadline;
-        } else {
-          deadline = visitor.deadline;
+        if (!visitorResponse.ok) {
+          throw new Error(`Erreur HTTP: ${visitorResponse.status}`);
         }
 
-        // Get campaign configuration
-        const configResponse = await withRetry(
-          async () => {
-            console.log('📋 Récupération de la configuration de la campagne');
-            const response = await fetch(
-              `${API_BASE_URL}/api/visitor-storage-get?visitor_id=${encodeURIComponent(visitorId)}&campaign_id=${encodeURIComponent(campaignId)}`,
-              { headers: defaultHeaders }
-            );
+        const visitorData = await visitorResponse.json();
+        console.log('✅ Données visiteur reçues:', visitorData);
 
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
+        const { visitorId } = visitorData;
+        if (!visitorId) {
+          throw new Error('ID visiteur manquant dans la réponse');
+        }
 
-            return response;
-          },
-          'getCampaignConfig'
+        console.log('📡 Recherche des données visiteur');
+        const lookupResponse = await fetch(
+          `${API_BASE_URL}/api/combined-visitor-lookup?visitor_id=${encodeURIComponent(visitorId)}`,
+          { headers: defaultHeaders }
         );
 
-        const { campaign_config: config } = await configResponse.json();
+        if (!lookupResponse.ok) {
+          throw new Error(`Erreur HTTP lookup: ${lookupResponse.status}`);
+        }
+
+        const lookupData = await lookupResponse.json();
+        console.log('✅ Données lookup reçues:', lookupData);
+
+        if (!lookupData.visitor) {
+          throw new Error('Données visiteur manquantes dans la réponse lookup');
+        }
+
+        const deadline = lookupData.visitor.deadline;
+        if (!deadline) {
+          throw new Error('Date limite manquante dans les données visiteur');
+        }
 
         // Mark container as processed
         processedContainers.add(container);
 
-        // Apply campaign styles
-        Object.assign(container.style, {
-          backgroundColor: config.styles.background,
-          color: config.styles.text,
-          padding: '1rem',
-          borderRadius: '0.5rem',
-          textAlign: 'center',
-          fontFamily: 'system-ui, -apple-system, sans-serif'
-        });
-
-        // Debounced update function
-        const debounce = (func, wait) => {
-          let timeout;
-          return function executedFunction(...args) {
-            const later = () => {
-              clearTimeout(timeout);
-              func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-          };
-        };
-
+        // Update display
         const updateDisplay = () => {
-          const now = new Date().getTime();
-          const end = new Date(deadline).getTime();
-          const distance = end - now;
+          try {
+            const now = new Date().getTime();
+            const end = new Date(deadline).getTime();
+            const distance = end - now;
 
-          if (distance < 0) {
-            container.innerHTML = '<div>Offre expirée</div>';
-            return;
+            if (distance < 0) {
+              container.innerHTML = '<div>Offre expirée</div>';
+              return;
+            }
+
+            const days = Math.floor(distance / (1000 * 60 * 60 * 24));
+            const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+
+            container.innerHTML = `
+              <div style="font-size: 1.5rem; font-weight: 600;">
+                ${days}j ${hours}h ${minutes}m ${seconds}s
+              </div>
+            `;
+          } catch (error) {
+            console.error('❌ Erreur lors de la mise à jour de l\'affichage:', error);
+            container.innerHTML = '<div style="color: red;">Erreur d\'affichage</div>';
           }
-
-          const days = Math.floor(distance / (1000 * 60 * 60 * 24));
-          const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-          const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-          const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-
-          container.innerHTML = `
-            <div style="font-size: 0.875rem; margin-bottom: 0.5rem;">${config.text_template}</div>
-            <div style="font-size: 1.5rem; font-weight: 600;">
-              ${days}j ${hours}h ${minutes}m ${seconds}s
-            </div>
-          `;
         };
 
-        const debouncedUpdate = debounce(updateDisplay, 100);
+        // Initial update
         updateDisplay();
-        const interval = setInterval(debouncedUpdate, 1000);
+        
+        // Set up interval
+        const interval = setInterval(updateDisplay, 1000);
 
         // Cleanup on container removal
         const observer = new MutationObserver((mutations) => {
@@ -310,35 +247,58 @@ async function initializeCountdown() {
               if (node === container) {
                 clearInterval(interval);
                 observer.disconnect();
+                processedContainers.delete(container);
+                finishProcessing(container);
               }
             });
           });
         });
 
         observer.observe(container.parentNode, { childList: true });
+        finishProcessing(container);
 
       } catch (containerError) {
         console.error('❌ Erreur lors du traitement du conteneur:', containerError);
         container.innerHTML = `<div style="color: red;">Une erreur est survenue: ${containerError.message}</div>`;
+        finishProcessing(container);
       }
     }
   } catch (error) {
     console.error('❌ Erreur globale:', error);
     document.querySelectorAll('[data-countdown-widget]').forEach(container => {
       container.innerHTML = '<div style="color: red;">Une erreur système est survenue</div>';
+      finishProcessing(container);
     });
   }
 }
 
-// Initialize on load and handle dynamic content
+// Initialize on load
 document.addEventListener('DOMContentLoaded', initializeCountdown);
 
 // Debounced observer for dynamic content
+const debounce = (func, wait) => {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+};
+
 const contentObserver = new MutationObserver(
   debounce(() => {
-    console.log('🔄 Contenu dynamique détecté, réinitialisation du compte à rebours');
-    initializeCountdown();
-  }, 500)
+    console.log('🔄 Contenu dynamique détecté');
+    const unprocessedContainers = Array.from(document.querySelectorAll('[data-countdown-widget]'))
+      .filter(container => !processedContainers.has(container) && !isProcessing(container));
+    
+    if (unprocessedContainers.length > 0) {
+      console.log(`🔄 ${unprocessedContainers.length} nouveaux conteneurs détectés`);
+      initializeCountdown();
+    }
+  }, DEBOUNCE_DELAY)
 );
 
 contentObserver.observe(document.body, {
