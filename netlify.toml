@@ -14,20 +14,27 @@
 [[headers]]
   for = "/*.js"
   [headers.values]
-    Content-Type = "application/javascript"
-    X-Content-Type-Options = "nosniff"
+    Content-Type = "application/javascript; charset=utf-8"
 
 [[headers]]
   for = "/*.css"
   [headers.values]
-    Content-Type = "text/css"
-    X-Content-Type-Options = "nosniff"
+    Content-Type = "text/css; charset=utf-8"
 
 [[headers]]
-  for = "/assets/*"
+  for = "/assets/*.js"
   [headers.values]
-    Content-Type = "application/javascript"
-    X-Content-Type-Options = "nosniff"
+    Content-Type = "application/javascript; charset=utf-8"
+
+[[headers]]
+  for = "/assets/*.css"
+  [headers.values]
+    Content-Type = "text/css; charset=utf-8"
+
+[[headers]]
+  for = "/assets/*.mjs"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
 
 [[headers]]
   for = "/*"
@@ -37,6 +44,9 @@
     Access-Control-Allow-Headers = "Content-Type, Authorization, X-Client-Info"
     X-Frame-Options = "DENY"
     X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
 
 [[redirects]]
   from = "/api/*"
