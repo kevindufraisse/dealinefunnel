@@ -37,25 +37,31 @@ const defaultStyles = {
 async function initializeCountdown() {
   // Wrap in a try-catch to handle errors gracefully
   try {
+    console.log('🔄 Starting countdown initialization');
+
     // Load FingerprintJS from CDN
     if (!window.FingerprintJS) {
+      console.log('📦 Loading FingerprintJS');
       const script = document.createElement('script');
       script.src = 'https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js';
       script.async = true;
       await new Promise((resolve, reject) => {
         script.onload = resolve;
-        script.onerror = reject;
+        script.onerror = (e) => {
+          console.error('❌ Error loading FingerprintJS:', e);
+          reject(e);
+        };
         document.head.appendChild(script);
       });
+      console.log('✅ FingerprintJS loaded');
     }
 
     // Find all countdown containers on the page
     const containers = document.querySelectorAll('[data-countdown-widget]');
+    console.log('🔍 Found containers:', containers.length);
     
     containers.forEach(async (container) => {
       try {
-        console.log('🔄 Starting countdown initialization');
-
         const campaignId = container.getAttribute('data-campaign-id');
         if (!campaignId) {
           console.error('❌ No campaign ID provided');
@@ -69,33 +75,15 @@ async function initializeCountdown() {
         container.innerHTML = '<div>Loading countdown...</div>';
 
         // Initialize FingerprintJS
+        console.log('🔍 Initializing FingerprintJS');
         const fp = await FingerprintJS.load();
         const result = await fp.get();
         const fingerprint = result.visitorId;
         const userAgent = navigator.userAgent;
+        console.log('✅ Fingerprint generated:', fingerprint);
 
         // Initialize tracking
         console.log('🔍 Generating visitor ID');
-        const existingVisitorId = getCookie('dfunnel_visitor');
-        
-        if (existingVisitorId) {
-          console.log('📍 Using existing visitor ID from cookie:', existingVisitorId);
-          const visitorCheckResponse = await fetch(
-            `${API_BASE_URL}/api/combined-visitor-lookup?visitor_id=${encodeURIComponent(existingVisitorId)}`,
-            {
-              headers: defaultHeaders
-            }
-          );
-          
-          if (visitorCheckResponse.ok) {
-            const { visitor: existingVisitor } = await visitorCheckResponse.json();
-            if (existingVisitor) {
-              console.log('✅ Existing visitor found');
-              return existingVisitorId;
-            }
-          }
-        }
-
         const visitorResponse = await fetch(`${API_BASE_URL}/api/visitor-generate`, {
           method: 'POST',
           headers: defaultHeaders,
@@ -107,14 +95,14 @@ async function initializeCountdown() {
         });
 
         if (!visitorResponse.ok) {
-          throw new Error(`Failed to generate visitor: ${visitorResponse.status}`);
+          const errorText = await visitorResponse.text();
+          console.error('❌ Visitor generation failed:', visitorResponse.status, errorText);
+          throw new Error(`Failed to generate visitor: ${visitorResponse.status} - ${errorText}`);
         }
 
-        const { visitorId } = await visitorResponse.json();
+        const visitorData = await visitorResponse.json();
+        const { visitorId } = visitorData;
         console.log('✅ Visitor ID generated:', visitorId);
-        
-        // Store visitor ID in cookie for 30 days
-        setCookie('dfunnel_visitor', visitorId, 30);
 
         // Look up visitor data
         console.log('🔍 Looking up visitor data');
@@ -126,7 +114,9 @@ async function initializeCountdown() {
         );
 
         if (!lookupResponse.ok) {
-          throw new Error(`Failed to lookup visitor: ${lookupResponse.status}`);
+          const errorText = await lookupResponse.text();
+          console.error('❌ Visitor lookup failed:', lookupResponse.status, errorText);
+          throw new Error(`Failed to lookup visitor: ${lookupResponse.status} - ${errorText}`);
         }
 
         const { visitor } = await lookupResponse.json();
@@ -144,8 +134,16 @@ async function initializeCountdown() {
               deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
             })
           });
+
+          if (!setResponse.ok) {
+            const errorText = await setResponse.text();
+            console.error('❌ Visitor storage failed:', setResponse.status, errorText);
+            throw new Error(`Failed to set visitor storage: ${setResponse.status} - ${errorText}`);
+          }
+
           const { deadline: newDeadline } = await setResponse.json();
           deadline = newDeadline;
+          console.log('✅ New deadline set:', deadline);
         } else {
           deadline = visitor.deadline;
           console.log('⏰ Using existing deadline:', deadline);
@@ -159,6 +157,13 @@ async function initializeCountdown() {
             headers: defaultHeaders
           }
         );
+
+        if (!configResponse.ok) {
+          const errorText = await configResponse.text();
+          console.error('❌ Campaign config failed:', configResponse.status, errorText);
+          throw new Error(`Failed to get campaign config: ${configResponse.status} - ${errorText}`);
+        }
+
         const { campaign_config: config } = await configResponse.json();
         console.log('✅ Campaign config:', config);
 
@@ -213,13 +218,15 @@ async function initializeCountdown() {
         observer.observe(container.parentNode, { childList: true });
         
       } catch (error) {
-        console.error('❌ Error initializing countdown for container:', error);
+        console.error('❌ Error initializing countdown for container:', error.message);
+        console.error('Stack trace:', error.stack);
         Object.assign(container.style, defaultStyles);
-        container.innerHTML = '<div>Error loading countdown timer</div>';
+        container.innerHTML = `<div>Error: ${error.message}</div>`;
       }
     });
   } catch (error) {
-    console.error('❌ Error in countdown initialization:', error);
+    console.error('❌ Error in countdown initialization:', error.message);
+    console.error('Stack trace:', error.stack);
   }
 }
 
