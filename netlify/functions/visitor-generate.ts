@@ -78,22 +78,7 @@ export const handler: Handler = async (event) => {
       deadline: deadline.toISOString()
     });
 
-    // Create visitor session
-    const { error: sessionError } = await supabase
-      .from('visitor_sessions')
-      .insert([{
-        visitor_id: visitorId,
-        ip_address: ipAddress,
-        user_agent: userAgent,
-        fingerprint
-      }]);
-
-    if (sessionError) {
-      console.error('❌ [visitor-generate] Session creation error:', sessionError);
-      throw sessionError;
-    }
-
-    // Create visitor entry
+    // Create visitor entry first
     const { error: visitorError } = await supabase
       .from('visitors')
       .insert([{
@@ -110,6 +95,21 @@ export const handler: Handler = async (event) => {
     if (visitorError) {
       console.error('❌ [visitor-generate] Visitor creation error:', visitorError);
       throw visitorError;
+    }
+
+    // Then create visitor session
+    const { error: sessionError } = await supabase
+      .from('visitor_sessions')
+      .insert([{
+        visitor_id: visitorId,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        fingerprint
+      }]);
+
+    if (sessionError) {
+      console.error('❌ [visitor-generate] Session creation error:', sessionError);
+      throw sessionError;
     }
 
     console.log('📊 [visitor-generate] Database response:', {
