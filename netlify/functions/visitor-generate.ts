@@ -62,6 +62,7 @@ export const handler: Handler = async (event) => {
     await supabase
       .from('visitors')
       .insert([{
+        id: uuidv4(),
         visitor_id: visitorId,
         ip_address: ipAddress,
         user_agent: userAgent,
