@@ -52,16 +52,13 @@ export const handler: Handler = async (event) => {
     const { data, error } = await supabase
       .from('visitors')
       .select(`
-        id,
-        visitor_id,
-        created_at,
-        last_seen,
-        deadline,
+        *,
         campaigns (
           id,
           title,
           type,
-          styles
+          styles,
+          target_urls
         )
       `)
       .eq('visitor_id', visitorId)
@@ -94,15 +91,7 @@ export const handler: Handler = async (event) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        visitor: {
-          id: data.id,
-          created_at: data.created_at,
-          last_seen: data.last_seen
-        },
-        deadline: {
-          timestamp: data.deadline,
-          campaign_id: data.campaigns?.id
-        }
+        visitor: data
       })
     };
   } catch (error) {
