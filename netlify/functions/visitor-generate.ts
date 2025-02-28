@@ -23,7 +23,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept, Origin',
+  'Access-Control-Allow-Headers': 'Content-Type, Accept, Origin, client-ip, x-forwarded-for',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Max-Age': '86400'
 };
@@ -44,10 +44,19 @@ export const handler: Handler = async (event) => {
   }
 
   try {
-    const { fingerprint, userAgent } = JSON.parse(event.body || '{}');
+    const parsedBody = JSON.parse(event.body || '{}');
+    const { fingerprint, userAgent } = parsedBody;
     const now = new Date();
+
+    // Extraire l'IP depuis le header "client-ip" ou "x-forwarded-for"
+    const ipAddress = event.headers['client-ip'] || event.headers['x-forwarded-for'] || event.headers['x-real-ip'] || '';
+    if (!ipAddress) {
+      console.warn('IP introuvable dans les headers');
+    }
     
-    // Create a new campaign
+    console.log('IP récupérée:', ipAddress);
+
+    // Création d'une nouvelle campagne
     const campaignId = uuidv4();
     const { error: campaignError } = await supabase
       .from('campaigns')
@@ -55,7 +64,7 @@ export const handler: Handler = async (event) => {
         id: campaignId,
         title: 'Test Campaign',
         type: 'evergreen',
-        duration_minutes: 1440, // 24 hours
+        duration_minutes: 1440, // 24 heures
         target_urls: ['*'],
         expiration_action: { type: 'message', content: 'Offer expired' },
         styles: { background: '#f3f4f6', text: '#111827', button: '#3b82f6' }
@@ -67,8 +76,7 @@ export const handler: Handler = async (event) => {
     }
 
     const visitorId = uuidv4();
-    const ipAddress = event.headers['client-ip'] || '';
-    const deadline = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours from now
+    const deadline = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 heures
 
     console.log('📝 [visitor-generate] Creating visitor:', {
       visitor_id: visitorId,
@@ -79,8 +87,8 @@ export const handler: Handler = async (event) => {
       deadline: deadline.toISOString()
     });
 
-    // Create visitor entry first
-    const { error: visitorError } = await supabase
+    // Création de l'entrée visitor avec .select() pour vérifier l'insertion
+    const { data: visitorData, error: visitorError } = await supabase
       .from('visitors')
       .insert([{
         id: uuidv4(),
@@ -91,14 +99,17 @@ export const handler: Handler = async (event) => {
         campaign_id: campaignId,
         deadline: deadline.toISOString(),
         last_seen: now.toISOString()
-      }]);
+      }])
+      .select();
 
     if (visitorError) {
       console.error('❌ [visitor-generate] Visitor creation error:', visitorError);
       throw visitorError;
     }
 
-    // Then create visitor session
+    console.log('Donnée insérée dans visitors:', visitorData);
+
+    // Création de la session visitor
     const { error: sessionError } = await supabase
       .from('visitor_sessions')
       .insert([{
@@ -117,7 +128,6 @@ export const handler: Handler = async (event) => {
       success: true,
       timestamp: now.toISOString()
     });
-
     console.log('✅ [visitor-generate] Visitor created successfully');
 
     return {
